@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Mic, MicOff, Video, VideoOff, Monitor, MessageSquare, Phone } from "lucide-react"
+import DebugPanel from "./debug-panel"
 
 interface Message {
   id: string
@@ -120,16 +121,29 @@ export default function VideoConference() {
   }, [])
 
   const handleSignalingMessage = async (message: SignalingMessage) => {
-    const peer = peersRef.current.get(message.from)
-    if (!peer) return
+    console.log(`Handling signaling message from ${message.from}:`, message.type)
+
+    let peer = peersRef.current.get(message.from)
+
+    // Create peer connection if it doesn't exist
+    if (!peer) {
+      console.log(`Creating new peer connection for ${message.from}`)
+      peer = createPeerConnection(message.from, false)
+    }
 
     try {
       switch (message.type) {
         case "offer":
-          await peer.setRemoteDescription(message.data)
-          const answer = await peer.createAnswer()
+          console.log(`Processing offer from ${message.from}`)
+          await peer.setRemoteDescription(new RTCSessionDescription(message.data))
+
+          const answer = await peer.createAnswer({
+            offerToReceiveAudio: true,
+            offerToReceiveVideo: true,
+          })
           await peer.setLocalDescription(answer)
 
+          console.log(`Sending answer to ${message.from}`)
           await fetch(`/api/rooms/${roomId}/signaling`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -143,61 +157,102 @@ export default function VideoConference() {
           break
 
         case "answer":
-          await peer.setRemoteDescription(message.data)
+          console.log(`Processing answer from ${message.from}`)
+          await peer.setRemoteDescription(new RTCSessionDescription(message.data))
           break
 
         case "ice-candidate":
-          await peer.addIceCandidate(message.data)
+          console.log(`Processing ICE candidate from ${message.from}`)
+          await peer.addIceCandidate(new RTCIceCandidate(message.data))
           break
       }
     } catch (error) {
-      console.error("Error handling signaling message:", error)
+      console.error(`Error handling signaling message from ${message.from}:`, error)
     }
   }
 
   const createPeerConnection = (remoteUserId: string, isInitiator: boolean) => {
+    console.log(`Creating peer connection for ${remoteUserId}, isInitiator: ${isInitiator}`)
+
     const configuration = {
-      iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:stun1.l.google.com:19302" }],
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+        { urls: "stun:stun2.l.google.com:19302" },
+        { urls: "stun:stun3.l.google.com:19302" },
+      ],
     }
 
     const peer = new RTCPeerConnection(configuration)
     peersRef.current.set(remoteUserId, peer)
 
-    // Add local stream tracks
+    // Add connection state logging
+    peer.onconnectionstatechange = () => {
+      console.log(`Peer connection state for ${remoteUserId}:`, peer.connectionState)
+    }
+
+    peer.oniceconnectionstatechange = () => {
+      console.log(`ICE connection state for ${remoteUserId}:`, peer.iceConnectionState)
+    }
+
+    // Add local stream tracks with better error handling
     if (localStreamRef.current) {
+      console.log(`Adding local stream tracks for ${remoteUserId}`)
       localStreamRef.current.getTracks().forEach((track) => {
+        console.log(`Adding track: ${track.kind}`)
         peer.addTrack(track, localStreamRef.current!)
       })
+    } else {
+      console.error("No local stream available when creating peer connection")
     }
 
-    // Handle remote stream
+    // Handle remote stream with improved logging
     peer.ontrack = (event) => {
+      console.log(`Received remote track from ${remoteUserId}:`, event.track.kind)
       const remoteStream = event.streams[0]
-      addRemoteVideo(remoteUserId, remoteStream)
-    }
-
-    // Handle ICE candidates
-    peer.onicecandidate = async (event) => {
-      if (event.candidate) {
-        await fetch(`/api/rooms/${roomId}/signaling`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            from: userId,
-            to: remoteUserId,
-            type: "ice-candidate",
-            data: event.candidate,
-          }),
-        })
+      if (remoteStream) {
+        console.log(`Remote stream has ${remoteStream.getTracks().length} tracks`)
+        addRemoteVideo(remoteUserId, remoteStream)
+      } else {
+        console.error("No remote stream in track event")
       }
     }
 
-    // Create offer if initiator
+    // Handle ICE candidates with better error handling
+    peer.onicecandidate = async (event) => {
+      if (event.candidate) {
+        console.log(`Sending ICE candidate for ${remoteUserId}`)
+        try {
+          await fetch(`/api/rooms/${roomId}/signaling`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              from: userId,
+              to: remoteUserId,
+              type: "ice-candidate",
+              data: event.candidate,
+            }),
+          })
+        } catch (error) {
+          console.error("Error sending ICE candidate:", error)
+        }
+      }
+    }
+
+    // Create offer if initiator with better error handling
     if (isInitiator) {
+      console.log(`Creating offer for ${remoteUserId}`)
       peer
-        .createOffer()
-        .then((offer) => peer.setLocalDescription(offer))
+        .createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true,
+        })
+        .then((offer) => {
+          console.log(`Setting local description for ${remoteUserId}`)
+          return peer.setLocalDescription(offer)
+        })
         .then(async () => {
+          console.log(`Sending offer to ${remoteUserId}`)
           await fetch(`/api/rooms/${roomId}/signaling`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -209,34 +264,72 @@ export default function VideoConference() {
             }),
           })
         })
-        .catch(console.error)
+        .catch((error) => {
+          console.error(`Error creating offer for ${remoteUserId}:`, error)
+        })
     }
 
     return peer
   }
 
   const addRemoteVideo = (userId: string, stream: MediaStream) => {
+    console.log(`Adding remote video for ${userId}`)
+
+    // Remove existing video if any
+    const existingContainer = document.getElementById(`container-${userId}`)
+    if (existingContainer) {
+      existingContainer.remove()
+    }
+
+    // Create new video element
     const videoElement = document.createElement("video")
+    videoElement.id = `video-${userId}`
     videoElement.autoplay = true
     videoElement.playsInline = true
+    videoElement.muted = false // Don't mute remote videos
     videoElement.srcObject = stream
     videoElement.className = "w-full h-full object-cover rounded-lg"
 
+    // Add event listeners for debugging
+    videoElement.onloadedmetadata = () => {
+      console.log(`Video metadata loaded for ${userId}`)
+    }
+
+    videoElement.onplay = () => {
+      console.log(`Video started playing for ${userId}`)
+    }
+
+    videoElement.onerror = (error) => {
+      console.error(`Video error for ${userId}:`, error)
+    }
+
     const container = document.createElement("div")
+    container.id = `container-${userId}`
     container.className = "relative bg-gray-800 rounded-lg aspect-video"
-    container.innerHTML = `
-      <div class="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm">
-        ${userId}
-      </div>
-    `
+
+    const label = document.createElement("div")
+    label.className = "absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-sm"
+    label.textContent = userId
+
     container.appendChild(videoElement)
+    container.appendChild(label)
 
     const remoteVideosContainer = document.getElementById("remote-videos")
     if (remoteVideosContainer) {
       remoteVideosContainer.appendChild(container)
+      console.log(`Added video container for ${userId} to DOM`)
+    } else {
+      console.error("Remote videos container not found")
     }
 
     remoteVideosRef.current.set(userId, videoElement)
+
+    // Force video to play (some browsers require this)
+    setTimeout(() => {
+      videoElement.play().catch((error) => {
+        console.error(`Error playing video for ${userId}:`, error)
+      })
+    }, 100)
   }
 
   const removePeer = (userId: string) => {
@@ -541,6 +634,8 @@ export default function VideoConference() {
           </CardContent>
         </Card>
       )}
+      {/* Debug Panel */}
+      <DebugPanel isInRoom={isInRoom} users={users} localStream={localStreamRef.current} peers={peersRef.current} />
     </div>
   )
 }
