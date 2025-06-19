@@ -12,6 +12,10 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // Ensure client-side rendering for pages that use browser APIs
+  async rewrites() {
+    return []
+  },
 }
 
 module.exports = nextConfig

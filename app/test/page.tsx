@@ -1,15 +1,40 @@
 "use client"
 
-import { useRef, useState } from "react"
+import { useRef, useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 
 export default function TestPage() {
   const [hasVideo, setHasVideo] = useState(false)
   const [hasAudio, setHasAudio] = useState(false)
   const [error, setError] = useState("")
+  const [isClient, setIsClient] = useState(false)
+  const [browserInfo, setBrowserInfo] = useState({
+    userAgent: "",
+    hasWebRTC: false,
+    hasGetUserMedia: false,
+    isHTTPS: false,
+  })
   const videoRef = useRef<HTMLVideoElement>(null)
 
+  // Ensure we're on the client side
+  useEffect(() => {
+    setIsClient(true)
+
+    // Set browser info only on client side
+    setBrowserInfo({
+      userAgent: navigator.userAgent,
+      hasWebRTC: typeof window !== "undefined" && !!window.RTCPeerConnection,
+      hasGetUserMedia: typeof navigator !== "undefined" && !!navigator.mediaDevices?.getUserMedia,
+      isHTTPS: typeof window !== "undefined" && window.location.protocol === "https:",
+    })
+  }, [])
+
   const testMedia = async () => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setError("getUserMedia is not supported in this browser")
+      return
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
@@ -36,6 +61,11 @@ export default function TestPage() {
   }
 
   const testWebRTC = async () => {
+    if (typeof window === "undefined" || !window.RTCPeerConnection) {
+      setError("WebRTC is not supported in this browser")
+      return
+    }
+
     try {
       const pc = new RTCPeerConnection({
         iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -51,10 +81,23 @@ export default function TestPage() {
       console.log("Offer created:", offer)
 
       pc.close()
+      setError("")
     } catch (err) {
       console.error("WebRTC error:", err)
       setError(`WebRTC Error: ${err}`)
     }
+  }
+
+  // Don't render anything until we're on the client
+  if (!isClient) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white p-8 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white mx-auto"></div>
+          <p className="mt-4">Loading...</p>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -63,10 +106,12 @@ export default function TestPage() {
 
       <div className="space-y-6">
         <div>
-          <Button onClick={testMedia} className="mr-4">
+          <Button onClick={testMedia} className="mr-4" disabled={!browserInfo.hasGetUserMedia}>
             Test Camera & Microphone
           </Button>
-          <Button onClick={testWebRTC}>Test WebRTC</Button>
+          <Button onClick={testWebRTC} disabled={!browserInfo.hasWebRTC}>
+            Test WebRTC
+          </Button>
         </div>
 
         {error && (
@@ -88,16 +133,16 @@ export default function TestPage() {
             <h3 className="text-xl font-semibold mb-4">Browser Info</h3>
             <div className="bg-gray-800 p-4 rounded-lg text-sm">
               <p>
-                <strong>User Agent:</strong> {navigator.userAgent}
+                <strong>User Agent:</strong> {browserInfo.userAgent}
               </p>
               <p>
-                <strong>WebRTC Support:</strong> {window.RTCPeerConnection ? "✅ Yes" : "❌ No"}
+                <strong>WebRTC Support:</strong> {browserInfo.hasWebRTC ? "✅ Yes" : "❌ No"}
               </p>
               <p>
-                <strong>getUserMedia Support:</strong> {navigator.mediaDevices?.getUserMedia ? "✅ Yes" : "❌ No"}
+                <strong>getUserMedia Support:</strong> {browserInfo.hasGetUserMedia ? "✅ Yes" : "❌ No"}
               </p>
               <p>
-                <strong>HTTPS:</strong> {location.protocol === "https:" ? "✅ Yes" : "❌ No"}
+                <strong>HTTPS:</strong> {browserInfo.isHTTPS ? "✅ Yes" : "❌ No"}
               </p>
             </div>
           </div>

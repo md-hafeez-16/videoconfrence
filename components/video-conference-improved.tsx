@@ -42,6 +42,8 @@ export default function VideoConferenceImproved() {
   const [isScreenSharing, setIsScreenSharing] = useState(false)
   const [connectionStatus, setConnectionStatus] = useState<Record<string, string>>({})
   const [debugInfo, setDebugInfo] = useState<string[]>([])
+  const [isClient, setIsClient] = useState(false)
+  const [webRTCSupported, setWebRTCSupported] = useState(false)
 
   const localVideoRef = useRef<HTMLVideoElement>(null)
   const localStreamRef = useRef<MediaStream | null>(null)
@@ -50,73 +52,88 @@ export default function VideoConferenceImproved() {
   const lastSignalingTimestamp = useRef<number>(0)
   const isJoiningRef = useRef(false)
 
-  const addDebugInfo = (info: string) => {
+  // Check if we're on client side and WebRTC is supported
+  useEffect(() => {
+    setIsClient(true)
+    setWebRTCSupported(
+      typeof window !== "undefined" &&
+        !!window.RTCPeerConnection &&
+        typeof navigator !== "undefined" &&
+        !!navigator.mediaDevices?.getUserMedia,
+    )
+    setRoomId(generateRoomId())
+  }, [])
+
+  const addDebugInfo = useCallback((info: string) => {
     const timestamp = new Date().toLocaleTimeString()
     const message = `[${timestamp}] ${info}`
     console.log(message)
     setDebugInfo((prev) => [...prev.slice(-20), message]) // Keep last 20 messages
-  }
+  }, [])
 
   const generateRoomId = () => {
     return Math.random().toString(36).substr(2, 8).toUpperCase()
   }
 
-  useEffect(() => {
-    setRoomId(generateRoomId())
-  }, [])
-
-  const createPeerConnection = useCallback((remoteUserId: string): RTCPeerConnection => {
-    addDebugInfo(`Creating peer connection for ${remoteUserId}`)
-
-    const configuration: RTCConfiguration = {
-      iceServers: [
-        { urls: "stun:stun.l.google.com:19302" },
-        { urls: "stun:stun1.l.google.com:19302" },
-        { urls: "stun:stun2.l.google.com:19302" },
-      ],
-      iceCandidatePoolSize: 10,
-    }
-
-    const peerConnection = new RTCPeerConnection(configuration)
-
-    // Add local stream tracks immediately
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        addDebugInfo(`Adding ${track.kind} track to peer ${remoteUserId}`)
-        peerConnection.addTrack(track, localStreamRef.current!)
-      })
-    }
-
-    // Handle connection state changes
-    peerConnection.onconnectionstatechange = () => {
-      const state = peerConnection.connectionState
-      addDebugInfo(`Peer ${remoteUserId} connection state: ${state}`)
-      setConnectionStatus((prev) => ({ ...prev, [remoteUserId]: state }))
-    }
-
-    peerConnection.oniceconnectionstatechange = () => {
-      addDebugInfo(`Peer ${remoteUserId} ICE state: ${peerConnection.iceConnectionState}`)
-    }
-
-    // Handle incoming tracks
-    peerConnection.ontrack = (event) => {
-      addDebugInfo(`Received ${event.track.kind} track from ${remoteUserId}`)
-      const remoteStream = event.streams[0]
-      if (remoteStream) {
-        addRemoteVideo(remoteUserId, remoteStream)
+  const createPeerConnection = useCallback(
+    (remoteUserId: string): RTCPeerConnection => {
+      if (!webRTCSupported) {
+        throw new Error("WebRTC not supported")
       }
-    }
 
-    // Handle ICE candidates
-    peerConnection.onicecandidate = async (event) => {
-      if (event.candidate) {
-        addDebugInfo(`Sending ICE candidate to ${remoteUserId}`)
-        await sendSignalingMessage(remoteUserId, "ice-candidate", event.candidate)
+      addDebugInfo(`Creating peer connection for ${remoteUserId}`)
+
+      const configuration: RTCConfiguration = {
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+        ],
+        iceCandidatePoolSize: 10,
       }
-    }
 
-    return peerConnection
-  }, [])
+      const peerConnection = new RTCPeerConnection(configuration)
+
+      // Add local stream tracks immediately
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => {
+          addDebugInfo(`Adding ${track.kind} track to peer ${remoteUserId}`)
+          peerConnection.addTrack(track, localStreamRef.current!)
+        })
+      }
+
+      // Handle connection state changes
+      peerConnection.onconnectionstatechange = () => {
+        const state = peerConnection.connectionState
+        addDebugInfo(`Peer ${remoteUserId} connection state: ${state}`)
+        setConnectionStatus((prev) => ({ ...prev, [remoteUserId]: state }))
+      }
+
+      peerConnection.oniceconnectionstatechange = () => {
+        addDebugInfo(`Peer ${remoteUserId} ICE state: ${peerConnection.iceConnectionState}`)
+      }
+
+      // Handle incoming tracks
+      peerConnection.ontrack = (event) => {
+        addDebugInfo(`Received ${event.track.kind} track from ${remoteUserId}`)
+        const remoteStream = event.streams[0]
+        if (remoteStream) {
+          addRemoteVideo(remoteUserId, remoteStream)
+        }
+      }
+
+      // Handle ICE candidates
+      peerConnection.onicecandidate = async (event) => {
+        if (event.candidate) {
+          addDebugInfo(`Sending ICE candidate to ${remoteUserId}`)
+          await sendSignalingMessage(remoteUserId, "ice-candidate", event.candidate)
+        }
+      }
+
+      return peerConnection
+    },
+    [webRTCSupported, addDebugInfo],
+  )
 
   const sendSignalingMessage = async (to: string, type: SignalingMessage["type"], data: any) => {
     try {
@@ -346,7 +363,7 @@ export default function VideoConferenceImproved() {
         addDebugInfo(`Polling error: ${error}`)
       }
     }, 2000) // Poll every 2 seconds
-  }, [isInRoom, roomId, userId])
+  }, [isInRoom, roomId, userId, addDebugInfo])
 
   const stopPolling = useCallback(() => {
     if (pollingIntervalRef.current) {
@@ -354,9 +371,14 @@ export default function VideoConferenceImproved() {
       pollingIntervalRef.current = null
       addDebugInfo("Stopped polling")
     }
-  }, [])
+  }, [addDebugInfo])
 
   const joinRoom = async () => {
+    if (!isClient || !webRTCSupported) {
+      alert("WebRTC is not supported in this browser")
+      return
+    }
+
     if (!roomId.trim()) {
       alert("Please enter a room ID")
       return
@@ -440,7 +462,10 @@ export default function VideoConferenceImproved() {
         localVideoRef.current.srcObject = null
       }
 
-      document.getElementById("remote-videos")!.innerHTML = ""
+      const remoteVideosContainer = document.getElementById("remote-videos")
+      if (remoteVideosContainer) {
+        remoteVideosContainer.innerHTML = ""
+      }
 
       setIsInRoom(false)
       setUsers([])
@@ -504,12 +529,44 @@ export default function VideoConferenceImproved() {
     })
   }, [connectionStatus])
 
+  // Don't render until client-side
+  if (!isClient) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-white mx-auto"></div>
+          <p className="mt-4">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // Show error if WebRTC not supported
+  if (!webRTCSupported) {
+    return (
+      <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center">
+        <div className="text-center max-w-md">
+          <AlertCircle className="mx-auto mb-4 h-16 w-16 text-red-500" />
+          <h1 className="text-2xl font-bold mb-4">WebRTC Not Supported</h1>
+          <p className="text-gray-300 mb-4">
+            Your browser doesn't support WebRTC or you're not using HTTPS. Please try:
+          </p>
+          <ul className="text-left text-gray-300 space-y-2">
+            <li>• Using Chrome, Firefox, or Edge</li>
+            <li>• Accessing via HTTPS</li>
+            <li>• Enabling camera/microphone permissions</li>
+          </ul>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 text-white">
       {/* Header */}
       <div className="bg-gray-800 p-4 border-b border-gray-700">
         <div className="flex justify-between items-center">
-          <h1 className="text-2xl font-bold">Video Conference (Improved)</h1>
+          <h1 className="text-2xl font-bold">Video Conference</h1>
 
           {!isInRoom ? (
             <div className="flex items-center gap-4">
