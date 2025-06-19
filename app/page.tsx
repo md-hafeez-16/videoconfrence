@@ -1,5 +1,5 @@
-import VideoConference from "@/components/video-conference"
+import VideoConferenceImproved from "@/components/video-conference-improved"
 
 export default function Home() {
-  return <VideoConference />
+  return <VideoConferenceImproved />
 }
